@@ -69,12 +69,14 @@
             ];
 
             nativeBuildInputs = with pkgs; [
-              git
-
               typst
               tinymist
               # pandoc
             ];
+
+            shellHook = ''
+              export SOURCE_DATE_EPOCH="$(date +%s)"
+            '';
           };
         };
     };

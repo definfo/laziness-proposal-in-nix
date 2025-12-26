@@ -1,17 +1,61 @@
 #import "@preview/touying-flow:1.2.0": *
+#import "@preview/fontawesome:0.4.0": *
+
+/// Utils
+
+#let to-string(input) = {
+  if type(input) == str {
+    input
+  } else if type(input) == "content" {
+    if input.has("text") {
+      input.text
+    } else if input.has("children") {
+      input.children.map(to-string).join("")
+    } else if input.has("body") {
+      to-string(input.body)
+    } else if input == [ ] {
+      ""
+    } else {
+      // fallback, I don't know how to handle this input
+      input
+    }
+  }
+}
+
+#let iconlink(
+  uri,
+  text: "",
+  icon: "link",
+  solid: false,
+) = {
+  let uri = to-string(uri)
+  let icon = to-string(icon)
+  if text != "" {
+    [#box(fa-icon(icon, solid: solid), inset: (right: 2pt))#link(uri)[#text]]
+  } else {
+    link(uri)[#fa-icon(icon, solid: solid)]
+  }
+}
+
+#let githublink(
+  uri,
+  text: "",
+) = {
+  iconlink(uri, text: text, icon: "github")
+}
 
 // Setup the presentation theme
 #show: flow-theme.with(
   aspect-ratio: "16-9",
   footer: self => self.info.title,
   footer-alt: self => self.info.subtitle,
-  navigation: "mini-slides",
-  primary: rgb("#543795"), // Deep Purple
-  secondary: rgb("#a38acb"), // Lighter Purple
+  navigation: "footer",
+  primary: rgb("#5277C3"), // Deep Purple
+  secondary: rgb("#7EBAE4"), // Lighter Purple
 
   config-info(
-    title: [Laziness Proposal in Nix],
-    subtitle: [A Hard step towards better evaluation],
+    title: [Laziness in Nix],
+    // subtitle: [],
     author: [def/ a.k.a. comonad],
     date: datetime.today(),
     institution: [SJTUG],
@@ -20,20 +64,69 @@
 
 #title-slide()
 
-// Automatic outline for the presentation structure
-// #outline()
-
-// ==========================================
-// SECTION 1: CONTEXT
-// ==========================================
 = #smallcaps("Background")
 
-== The State of Nix Expression
+== What is Laziness?
 
-// Suggestion: Use columns to separate text from visual concepts or code
+(https://notashelf.dev/posts/not-for-the-lazy#laziness-in-haskell)
+
+=== Laziness in Haskell
+
+```haskell
+lazyNumbers :: [Int]
+lazyNumbers = [1..]
+
+firstFiveNumbers :: [Int]
+firstFiveNumbers = take 5 lazyNumbers
+```
+
+`lazyNumbers` is an infinite list. However, the values are not computed all at once.
+
+`take 5 lazyNumbers` only computes the first 5 elements of the list when required.
+
+== Laziness in Nix: Conditionals
+
+```nix
+let
+  expensive = builtins.trace "This should not print!" (throw "Error");
+  value =
+    if false
+    then expensive
+    else "Safe";
+in
+  value
+```
+
+In Nix, the `false` branch is never evaluated, so the program executes safely.
+
+== Laziness in Nix: Functions
+
+```nix
+let
+  alwaysReturnsOne = x: 1;
+in
+  alwaysReturnsOne (throw "This should never be evaluated")
+```
+
+Function arguments are not evaluated unless explicitly used.
+
+== Laziness in Nix: Lazy Lists
+
+```nix
+let
+  lazyList = {
+    head = 1;
+    tail = lazyList.tail;
+  };
+in
+  lazyList.head
+```
+
+= #smallcaps("The Reality of Nix")
+
+== The State of Nix Expression - *libexpr*
+
 #slide(composer: (2fr, 1fr))[
-  *libexpr*
-
   Lazy evaluation (call-by-need)
 
   Values are computed only when:
@@ -42,115 +135,134 @@
 
   #v(1em)
   *Benefits:*
-  - Infinite structures.
-  - Acceptable evaluation time when importing nixpkgs.
-  - Efficient package composition (override / overlays).
-][
-  // Placeholder for a conceptual diagram
-  #align(center + horizon)[
-    #rect(width: 100%, height: 60%, fill: rgb("#f0f0f0"), radius: 10pt)[
-      #align(center + horizon)[
-        *Lazy Graph* \
-        (Visual Placeholder)
-      ]
-    ]
-  ]
+  - Enable heavy imports (e.g. nixpkgs).
+  - Enable efficient package composition (override / overlay).
+  - ...
 ]
-
-== Laziness beyond expression ...
-
-nix-store
-
-// ==========================================
-// SECTION 2: THE PROBLEM
-// ==========================================
-= #smallcaps("Problem")
 
 == Pain points of Nix's laziness
 
-// Suggestion: A 3-column layout for key pain points
-#slide(composer: (1fr, 1fr))[
-  #align(center)[
-    #circle(radius: 30pt, fill: rgb("#e0e0e0"))[#align(center + horizon)[*1*]]
+*Stack Trace*
+- Unreadable error messages out of stack trace, e.g. "error: infinite recursion detected" can be filled with internal implementation details.
+- Lengthy Nix path info *≪github:NixOS:nixpkgs/very-long-hash/foo/bar.nix≫*
 
-    *Stack Trace*
-  ]
-  #v(0.5em)
-  Errors happen "somewhere", making debugging difficult as the stack doesn't reflect the logical cause, e.g. stacktraces for "infinite recursion" can be totally useless.
-][
-  #align(center)[
-    #circle(radius: 30pt, fill: rgb("#e0e0e0"))[#align(center + horizon)[*3*]]
+*Performance*
+- Overhead with network/filesystem, e.g. bad fallback strategy with multiple substituters.
+- Evaluation of huge thunks prevents static analysis.
+- Import-From-Derivation (IFD) causes potential degrade on parallelism.
 
-    *Performance*
-  ]
-  #v(0.5em)
-  Multiple Nix3 CLI commands (*nix eval*, *nix flake check*) cannot benefit from eval cache; Import-From-Derivation (IFD) prevents optimization; etc.
-]
+*Interaction with Real-world Workload*
+- impure eval: stateful, unpredictable
+- flakes: flake evaluation is ANOTHER evaluation semantics.
+- ...
 
-#speaker-note[
-  Mention specific issue numbers from the NixOS/nix repo here to ground the problem.
+== Deep Dive: Why `nix eval` is slow?
 
-  - Patching flake inputs and improved flake path copying rely on lazy-trees.
-    - However lazy-trees breaks evalutaion determinism (random path name for deferred drv), which fails `builtins.unsafeGetAttrPos`, flake.parts-website, etc.
-    - Upstream Nix plans to introduce lazy-paths instead for gradual improvmenets. "have rope-structured strings with lazily computed fixed-length substrings to represent lazy hashing"
-  - Cachable `nix eval` and `nix flake check` rely on flake-schemas.
-    - Ridiculous, but yes, eval cache does not sufficiently address eval failures, adding with lazy evaluation, results in weak caching strategy.
-  - Determinate Nix experiments on new features, including parallel evalutaion, cache for pre-resolve store paths (FlakeHub only),
+Based on `src/libexpr/eval-cache.cc`:
 
-  https://github.com/hercules-ci/flake.parts-website/issues/1760
-  Virtual path semantics https://github.com/NixOS/nix/issues/10689#issuecomment-2835688644
-  Lazy trees v2 https://github.com/NixOS/nix/pull/13225
-  Flake schemas https://github.com/NixOS/nix/pull/8892
-]
+- *Cache Schema*: Stores keys (`FullAttrs`) and basic values (int, bool, string).
+  - Recursive attribute sets are NOT cached in most cases.
+- Outcome:
+  - `nix eval` needs to print the full value.
+  - It recursively traverses the value in memory.
+  - Encountering uncached `nAttrs` forces re-evaluation of the entire structure.
 
-// ==========================================
-// SECTION 3: CURRENT PROPOSAL
-// ==========================================
-= #smallcaps("Better laziness?")
+== Laziness & Performance beyond *libexpr* ...
 
-== DetSys - Lazy Tree (v2)
+(NOTE: the following statements are not directly referring to sub-directories in Nix source.)
 
-== Lix - Flakes Feature Freeze \@ 2.94.x
+Is *libstore* (nix-store) lazy?
+- Not really, esp. with flakes
+- Known issues:
+  - #githublink(
+      "https://github.com/NixOS/nix/issues/5551",
+      text: " #5551 flakes: avoid copying local flake to the store when self arg is omitted",
+    )
+  - #githublink(
+      "https://github.com/NixOS/nix/issues/3121",
+      text: " #3121 Copy local flakes to the store lazily",
+    )
+- Nix currently has merely no reliable method to trace copy-tree dependency.
 
-Known design issues of Nix flakes:
-- *flake.lock* semantics: lack of consensus
-  - implementation-dependent locking & libfecthers
-  - underdetermined *fetchTree* specification
-- Nix flake is NOT Nix (e.g. let-binding not allowed in flake inputs)
-- Strong coupling with nixpkgs
-  - *nix develop* hardcodes nixpkgs-specific internals
-- Issues around impurity
-  - Evaluation cache gets invalidated by maybe-unrelated file system operations
-- Weak composability
-  - Can *flake-parts* and *flake-schemas* do better?
+Is *libflake* (flakes) lazy?
+- No. Evaluation requires the "Lock -> Fetch -> Eval" pipeline.
+  - *Locking* (`lockFlake`) requires fetching the flake source to read/update `flake.lock`.
+  - Inputs are fetched/copied *before* evaluation even begins.
+- `builtins.fetchTree` should be, but is not lazy right now
 
-== CppNix - Regression Fixes
+= #smallcaps("Proposals")
 
-- (Nix 2.32) C API: Add lazy attribute and list item accessors #link("https://github.com/NixOS/nix/pull/14030")[\#14030]
+== DeterminateSystem - Lazy Tree (v2)
 
-- (Nix 2.32) Substituted flake inputs are no longer re-copied to the store #link("https://github.com/NixOS/nix/pull/14041")[\#14041]
-
-== CppNix - Lazy Path
-
-Virtual path semantics #link("https://github.com/NixOS/nix/issues/10689#issuecomment-2835688644")[\#10689]
-
-// Suggestion: Grid for structured layout of text + implementation details
-#grid(
-  columns: (2fr, 1fr),
-  gutter: 1em,
-  [
-    We introduce foobar.
-
-    - *Foo:* T.
-    - *Bar:* Z.
-  ],
-  rect(fill: luma(240), inset: 1em, radius: 5pt)[
-    *RFC Draft* \
-    Status: #text(fill: olive)[*Discussion*]
-  ],
+PR
+#githublink("https://github.com/NixOS/nix/pull/13225", text: " (Nix)#13225")
+|
+#githublink(
+  "https://github.com/DeterminateSystems/nix-src/pull/27",
+  text: " (Determinate Nix)#27",
 )
 
-== Devenv - Better Eval Cache
+- Pre: flake evaluation triggers copying all flake inputs into Nix store.
+  - This includes `self`, often a shallow clone in Git repo.
+  - HORRIBLE cost in huge monorepo / on devices with poor I/O.
+
+- Post: *lazily* "copied" flake inputs into Nix store.
+  - Actual behaviour: flake inputs are "mounted" as virtual filesystems on top of `/nix/store` as *RANDOM* "virtual" store paths.
+
+- Outcome: Possibly reduce unnecessary copying, allow patching flake inputs.
+
+- #emoji.warning Breakage: undeterminism caused by *random* store path for a lazily copied tree.
+  - Currently this fails `builtins.unsafeGetAttrPos`, flake.parts-website, etc.
+
+== DeterminateSystem - Parallel Evaluation
+
+PR
+#githublink(
+  "https://github.com/DeterminateSystems/nix-src/pull/125",
+  text: " #125 Multithreaded evaluator",
+)
+
+- Pre: single-threaded evaluation
+
+- Post: thread-pool evaluation; parallelized flake checks, flake show, search, and JSON/XML rendering
+
+- Outcome: Evaluation should be faster? Possible regression with locks.
+
+However this can be useless in the following cases:
+
+- Use with unsupported commands (due to lock/sync issues)
+- Face network bottleneck (esp. for CN mainland users)
+  - Check `nix flake prefetch-inputs`
+- ...
+
+
+== CppNix - Regression Fixes & Steady Improvements
+
+- #githublink(
+    "https://github.com/NixOS/nix/pull/14030",
+    text: " (Nix 2.32) C API: Add lazy attribute and list item accessors",
+  )
+
+- #githublink(
+    "https://github.com/NixOS/nix/pull/14041",
+    text: " (Nix 2.32) Substituted flake inputs are no longer re-copied to the store",
+  )
+
+== CppNix - Lazy Path Semantics
+
+#githublink(
+  "https://github.com/NixOS/nix/issues/10689#issuecomment-2835688644",
+  text: " Issue#10689 Virtual Path Semantics? Lazy Path Values?",
+)
+
+#githublink(
+  "https://github.com/NixOS/nix/issues/11161",
+  text: " Issue#11161 Tracking Issue for lazy, async instantiation and fetching",
+)
+\
+#emoji.arrow.t Almost dead :(
+
+== Devenv - Better Eval Cache Strategy
 
 #link(
   "https://devenv.sh/blog/2024/10/03/devenv-13-instant-developer-environments-with-nix-caching",
@@ -158,14 +270,46 @@ Virtual path semantics #link("https://github.com/NixOS/nix/issues/10689#issuecom
 
 Tag each evaluation cache entry, with access pattern seen from *nix log*
 
-Show no actual usage of snix (former tvix), still confusing ...
+No actual usage of Snix (former Tvix), flake evaluation  fully relies on the underlying Nix.
 
-= #smallcaps("The future of flakes")
+= #smallcaps("The Future")
 
-== DetSys - Flake schemas
+== DeterminateSystem - Flake schemas
 
-=== References
+PR:
+#githublink("https://github.com/NixOS/nix/pull/8892", text: " (Nix)#8892")
+|
+#githublink(
+  "https://github.com/NixOS/nix/pull/8892",
+  text: " (Determinate Nix)#8892",
+)
+
+- Pre: Nix flakes only accept certain top-level outputs.
+
+- Post: Users can define a specific schema to compose flake outputs.
+
+- Outcome:
+  - `nix flake check` can recognize custom attributes
+  - `nix eval` and `nix flake check` can benefit from eval cache.
+    - Related to "Record failure in flake evaluation
+
+== Lix - Flakes Feature Freeze \@ 2.94.x
+
+Lix Project listed several known design issues of Nix flakes:
+- *flake.lock* semantics: lack of consensus
+  - implementation-dependent locking & libfecthers
+  - underdetermined *builtins.fetchTree* specification
+- Nix flake is NOT Nix (e.g. let-binding not allowed in flake inputs)
+- Strong coupling with nixpkgs
+  - *nix develop* hardcodes nixpkgs-specific internals
+- Issues around impurity
+  - Evaluation cache gets invalidated by maybe-unrelated file system operations
+- Weak composability
+  - Think: Can *flake-parts* and *flake-schemas* solve this?
+
+
+== Read More
 
 #link(
   "https://samuel.dionne-riel.com/blog/2023/09/06/flakes-is-an-experiment-that-did-too-much-at-once.html",
-)
+)[- Flakes is an experiment that did too much at once - Samuel Dionne Riel]
