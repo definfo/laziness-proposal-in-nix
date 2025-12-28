@@ -2,34 +2,14 @@
 #import "@preview/fontawesome:0.4.0": *
 
 /// Utils
-
-#let to-string(input) = {
-  if type(input) == str {
-    input
-  } else if type(input) == "content" {
-    if input.has("text") {
-      input.text
-    } else if input.has("children") {
-      input.children.map(to-string).join("")
-    } else if input.has("body") {
-      to-string(input.body)
-    } else if input == [ ] {
-      ""
-    } else {
-      // fallback, I don't know how to handle this input
-      input
-    }
-  }
-}
-
 #let iconlink(
   uri,
   text: "",
   icon: "link",
   solid: false,
 ) = {
-  let uri = to-string(uri)
-  let icon = to-string(icon)
+  // let uri = to-string(uri)
+  // let icon = to-string(icon)
   if text != "" {
     [#box(fa-icon(icon, solid: solid), inset: (right: 2pt))#link(uri)[#text]]
   } else {
@@ -50,8 +30,8 @@
   footer: self => self.info.title,
   footer-alt: self => self.info.subtitle,
   navigation: "footer",
-  primary: rgb("#5277C3"), // Deep Purple
-  secondary: rgb("#7EBAE4"), // Lighter Purple
+  primary: rgb("#5277C3"),
+  secondary: rgb("#7EBAE4"),
 
   config-info(
     title: [Laziness in Nix],
@@ -163,9 +143,13 @@ Based on `src/libexpr/eval-cache.cc`:
 - *Cache Schema*: Stores keys (`FullAttrs`) and basic values (int, bool, string).
   - Recursive attribute sets are NOT cached in most cases.
 - Outcome:
-  - `nix eval` needs to print the full value.
-  - It recursively traverses the value in memory.
-  - Encountering uncached `nAttrs` forces re-evaluation of the entire structure.
+  - `nix eval` needs to fully traverse the value of an attrSet, where uncached `nAttrs` will force re-evaluation of the entire structure.
+
+For NixOS configuration, each rebuild waits for
+\
+`nix eval path_to_flake#nixosConfigurations.config.system.build.toplevel`
+\
+which is very time-consuming, even for a minor change.
 
 == Laziness & Performance beyond *libexpr* ...
 
@@ -203,16 +187,16 @@ PR
 )
 
 - Pre: flake evaluation triggers copying all flake inputs into Nix store.
-  - This includes `self`, often a shallow clone in Git repo.
-  - HORRIBLE cost in huge monorepo / on devices with poor I/O.
+  - `outputs = { self, ... }: foobar` results in copying a shallow clone of current Git repository into Nix store.
+  - Heavy overhead in monorepo / on edge devices with limited I/O performance.
 
-- Post: *lazily* "copied" flake inputs into Nix store.
-  - Actual behaviour: flake inputs are "mounted" as virtual filesystems on top of `/nix/store` as *RANDOM* "virtual" store paths.
+- Post: put *lazily* "copied" flake inputs into Nix store.
+  - Actual behaviour: flake inputs are "mounted" as virtual filesystems on top of Nix store as *RANDOM* "virtual" store paths.
 
-- Outcome: Possibly reduce unnecessary copying, allow patching flake inputs.
-
-- #emoji.warning Breakage: undeterminism caused by *random* store path for a lazily copied tree.
-  - Currently this fails `builtins.unsafeGetAttrPos`, flake.parts-website, etc.
+- Outcome:
+  - #sym.plus Possibly reduce unnecessary copying
+  - #sym.plus Allow patching flake inputs.
+  - #emoji.warning\Breakage: undeterminism caused by random store path for a lazily copied tree. Currently this fails `builtins.unsafeGetAttrPos`, flake.parts-website, etc.
 
 == DeterminateSystem - Parallel Evaluation
 
@@ -226,13 +210,15 @@ PR
 
 - Post: thread-pool evaluation; parallelized flake checks, flake show, search, and JSON/XML rendering
 
-- Outcome: Evaluation should be faster? Possible regression with locks.
+- Outcome:
+  - #sym.quest Possibly reduce evaluation time, along with overhead of async lock.
 
-However this can be useless in the following cases:
+However this may not be quite useful in the following cases:
 
-- Use with unsupported commands (due to lock/sync issues)
-- Face network bottleneck (esp. for CN mainland users)
-  - Check `nix flake prefetch-inputs`
+- Use with unsupported commands (due to lock/sync issues).
+- Face network bottleneck (esp. for China mainland users).
+  \
+  (Check `nix flake prefetch-inputs`.)
 - ...
 
 
@@ -268,7 +254,7 @@ However this can be useless in the following cases:
   "https://devenv.sh/blog/2024/10/03/devenv-13-instant-developer-environments-with-nix-caching",
 )
 
-Tag each evaluation cache entry, with access pattern seen from *nix log*
+Tag each evaluation cache entry, with access pattern seen from `nix log`.
 
 No actual usage of Snix (former Tvix), flake evaluation  fully relies on the underlying Nix.
 
@@ -286,12 +272,13 @@ PR:
 
 - Pre: Nix flakes only accept certain top-level outputs.
 
-- Post: Users can define a specific schema to compose flake outputs.
+- Post: Users can define a specific schema to manipulate flake outputs.
 
 - Outcome:
-  - `nix flake check` can recognize custom attributes
-  - `nix eval` and `nix flake check` can benefit from eval cache.
-    - Related to "Record failure in flake evaluation
+  - #sym.plus `nix flake check` can recognize custom attributes
+  - #sym.plus `nix eval` and `nix flake check` can benefit from eval cache.
+    \
+    (Related to "Record failure in flake evaluation".)
 
 == Lix - Flakes Feature Freeze \@ 2.94.x
 
