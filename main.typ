@@ -163,3 +163,9 @@ Show no actual usage of snix (former tvix), still confusing ...
 = #smallcaps("The future of flakes")
 
 == DetSys - Flake schemas
+
+=== References
+
+#link(
+  "https://samuel.dionne-riel.com/blog/2023/09/06/flakes-is-an-experiment-that-did-too-much-at-once.html",
+)
